@@ -228,6 +228,10 @@ opsctl help             # 完整命令列表
 
 等你说要哪个再做。
 
+## 发版
+
+维护者向发版（git push → 构建 → 发 release → 验证）完整流程在 [docs/RELEASE.md](docs/RELEASE.md)。
+
 ## 开发约定
 
 - 不加多余依赖。每多一个依赖就多一个供应链风险
