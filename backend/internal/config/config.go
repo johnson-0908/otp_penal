@@ -18,9 +18,20 @@ type Config struct {
 	Issuer      string   `json:"issuer"`
 	AllowedIPs  []string `json:"allowed_ips"`
 
+	// EntryPath is a random URL segment that gates panel access (like BT/1panel
+	// "security entrance"). Requests must first hit `/<EntryPath>/` to receive
+	// the panel_entry cookie; without the cookie every path returns 404 so
+	// scanners can't fingerprint the panel. Empty = disabled (dev only).
+	EntryPath string `json:"entry_path"`
+
+	// EntrySecret signs the panel_entry cookie (HMAC-SHA256). Separate from
+	// JWTSecret so rotating one doesn't invalidate the other.
+	EntrySecret string `json:"entry_secret"`
+
 	// DevMode is set only at runtime (via -dev flag) and never persisted.
 	// When true: admin/admin is seeded on first run, TOTP checks are
-	// bypassed on /api/auth/login and /api/auth/change-password.
+	// bypassed on /api/auth/login and /api/auth/change-password, and
+	// EntryPath check is skipped.
 	DevMode bool `json:"-"`
 }
 
@@ -58,15 +69,38 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) ensureSecret() error {
-	if c.JWTSecret != "" {
-		return nil
+	if c.JWTSecret == "" {
+		buf := make([]byte, 48)
+		if _, err := rand.Read(buf); err != nil {
+			return err
+		}
+		c.JWTSecret = base64.RawStdEncoding.EncodeToString(buf)
 	}
-	buf := make([]byte, 48)
-	if _, err := rand.Read(buf); err != nil {
-		return err
+	if c.EntrySecret == "" {
+		buf := make([]byte, 32)
+		if _, err := rand.Read(buf); err != nil {
+			return err
+		}
+		c.EntrySecret = base64.RawStdEncoding.EncodeToString(buf)
 	}
-	c.JWTSecret = base64.RawStdEncoding.EncodeToString(buf)
 	return nil
+}
+
+// RandomEntryPath generates a short, URL-safe random segment (no ambiguous
+// chars) used as the "security entrance" path. Matches BT-style `/abc1234/`.
+func RandomEntryPath(n int) (string, error) {
+	if n < 8 {
+		n = 10
+	}
+	const alpha = "abcdefghijkmnpqrstuvwxyz23456789"
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	for i := range buf {
+		buf[i] = alpha[int(buf[i])%len(alpha)]
+	}
+	return string(buf), nil
 }
 
 func (c *Config) Save(path string) error {

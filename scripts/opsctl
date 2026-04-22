@@ -78,12 +78,24 @@ cmd_status() {
   echo ""
 
   if [ "$active" = "active" ] && [ -n "$listen" ]; then
-    local health
-    health=$(curl -fsS --max-time 2 "http://$listen/api/health" 2>/dev/null || true)
+    # Panel now defaults to HTTPS with self-signed cert + EntryGate — we
+    # need -k (skip verification) and an auth cookie minted via the entry
+    # path. Pull the entry path from config and hit the mint URL first.
+    local entry health
+    entry=$(grep -Po '"entry_path"\s*:\s*"\K[^"]+' "$OPS_DATA_DIR/config.json" 2>/dev/null || true)
+    local host="${listen%:*}"
+    [ "$host" = "0.0.0.0" ] && host="127.0.0.1"
+    local port="${listen##*:}"
+    local base="https://$host:$port"
+    local cjar
+    cjar=$(mktemp)
+    curl -fsSk -c "$cjar" --max-time 2 "$base/$entry/" >/dev/null 2>&1 || true
+    health=$(curl -fsSk -b "$cjar" --max-time 2 "$base/api/health" 2>/dev/null || true)
+    rm -f "$cjar"
     if [ -n "$health" ]; then
       echo -e "  ${C_GREEN}health OK${C_RESET}: $health"
     else
-      warn "health 端点无响应 (检查 $listen)"
+      warn "health 端点无响应 (检查 $base)"
     fi
   fi
 

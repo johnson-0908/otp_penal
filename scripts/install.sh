@@ -8,12 +8,19 @@
 #   sudo ./install.sh
 #
 # Environment variables:
-#   OPS_VERSION   pin a specific release tag (default: latest)
-#   OPS_PREFIX    install prefix (default: /usr/local)
-#   OPS_DATA_DIR  data directory (default: /var/lib/ops-panel)
-#   OPS_USER      service user (default: opspanel)
-#   OPS_LISTEN    listen address (default: 127.0.0.1:8443)
-#   OPS_REPO      GitHub repo (default: johnson-0908/otp_penal)
+#   OPS_VERSION    pin a specific release tag (default: latest)
+#   OPS_PREFIX     install prefix (default: /usr/local)
+#   OPS_DATA_DIR   data directory (default: /var/lib/ops-panel)
+#   OPS_USER       service user (default: opspanel)
+#   OPS_LISTEN     listen address (default: 0.0.0.0:<RANDOM 20000-65000>)
+#                  — set to 127.0.0.1:8443 if you plan to reverse-proxy only
+#   OPS_REPO       GitHub repo (default: johnson-0908/otp_penal)
+#
+# Default posture is BT/1panel style:
+#   * HTTPS self-signed cert generated on first run
+#   * Random high-port so 8443/8888 scanners skip past
+#   * Random URL entry path — any URL without the entry path returns 404
+#   * firewalld opened for the chosen port automatically
 
 set -euo pipefail
 
@@ -22,7 +29,18 @@ OPS_VERSION="${OPS_VERSION:-}"
 OPS_PREFIX="${OPS_PREFIX:-/usr/local}"
 OPS_DATA_DIR="${OPS_DATA_DIR:-/var/lib/ops-panel}"
 OPS_USER="${OPS_USER:-opspanel}"
-OPS_LISTEN="${OPS_LISTEN:-127.0.0.1:8443}"
+
+# Default listen: random high port bound to all interfaces. Easier to scan
+# past (8443/8888 are obvious panel ports), and since we now ship self-signed
+# TLS + entry-path gate + rate limiting, binding to 0.0.0.0 is reasonable
+# for direct access without a reverse proxy.
+if [ -z "${OPS_LISTEN:-}" ]; then
+  # Bash $RANDOM is 0-32767; shift into 20000-65000 range.
+  OPS_PORT=$(( 20000 + RANDOM % 45000 ))
+  OPS_LISTEN="0.0.0.0:$OPS_PORT"
+else
+  OPS_PORT="${OPS_LISTEN##*:}"
+fi
 
 BIN="$OPS_PREFIX/bin/ops-panel"
 FRONTEND_DIR="$OPS_DATA_DIR/frontend"
@@ -258,13 +276,29 @@ echo "==========================================================="
 echo -e "${C_RESET}"
 
 if [ -f "$CRED_FILE" ]; then
-  # Extract username and password
+  # Extract fields (awk handles both "Username:" and "Username:    " alignment)
   U_LINE=$(grep -E '^Username:' "$CRED_FILE" | head -1 | awk '{print $2}')
   P_LINE=$(grep -E '^Password:' "$CRED_FILE" | head -1 | awk '{print $2}')
+  ENTRY_PATH=$(python3 -c "import json; print(json.load(open('$OPS_DATA_DIR/config.json')).get('entry_path',''))" 2>/dev/null || \
+               grep -o '"entry_path"[^,}]*' "$OPS_DATA_DIR/config.json" 2>/dev/null | head -1 | sed 's/.*"\([a-z0-9]*\)"[^"]*$/\1/')
 
-  echo -e "  ${C_BOLD}访问地址:${C_RESET}  http://$OPS_LISTEN"
+  # Detect a public IP for the access URL (best-effort — falls back to $HOSTNAME).
+  PUB_IP=$(curl -fsS --max-time 3 https://api.ipify.org 2>/dev/null || true)
+  if [ -z "$PUB_IP" ]; then
+    PUB_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
+  fi
+  [ -z "$PUB_IP" ] && PUB_IP="<服务器IP>"
+
+  URL="https://$PUB_IP:$OPS_PORT/$ENTRY_PATH/"
+
+  echo -e "  ${C_BOLD}访问地址:${C_RESET}  ${C_GREEN}$URL${C_RESET}"
   echo -e "  ${C_BOLD}用户名:${C_RESET}    $U_LINE"
   echo -e "  ${C_BOLD}初始密码:${C_RESET}  ${C_GREEN}$P_LINE${C_RESET}"
+  echo ""
+  echo -e "  ${C_YELLOW}⚠ 首次访问注意：${C_RESET}"
+  echo "     • 自签证书，浏览器会警告 → 点"高级" → "继续访问" 即可"
+  echo "     • URL 必须含 /$ENTRY_PATH/ 路径（安全入口），缺了走其他路径会 404"
+  echo "     • 入口 cookie 24h 有效，过期重新访问入口 URL 即可"
   echo ""
   echo -e "  ${C_YELLOW}⚠ 请立刻：${C_RESET}"
   echo "     1) 登录后修改密码（首次登录强制）"

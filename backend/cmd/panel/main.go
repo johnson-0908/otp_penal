@@ -46,7 +46,8 @@ func main() {
 		listen     = flag.String("listen", "", "listen address (overrides config)")
 		frontend   = flag.String("frontend", "", "frontend dist directory to serve (optional)")
 		trustProxy = flag.Bool("trust-proxy", false, "trust X-Forwarded-For / X-Real-IP")
-		devMode    = flag.Bool("dev", false, "DEV MODE: seed admin/admin, disable TOTP. LOCAL ONLY.")
+		devMode    = flag.Bool("dev", false, "DEV MODE: seed admin/admin, disable TOTP, disable entry gate. LOCAL ONLY.")
+		autoTLS    = flag.Bool("auto-tls", true, "auto-generate a self-signed TLS cert under data_dir/tls/ if TLS files not set")
 	)
 	flag.Parse()
 
@@ -83,6 +84,22 @@ func main() {
 		logger.Error("mkdir data", "err", err)
 		os.Exit(1)
 	}
+
+	// Auto-generate self-signed TLS cert on first run (unless admin set TLS
+	// paths or opted out). Keeps the default deployment HTTPS-only even when
+	// exposed to the internet (browser will warn once about the self-signed cert;
+	// replace with a real one from a reverse proxy / Let's Encrypt later).
+	if !cfg.DevMode && *autoTLS && cfg.TLSCertFile == "" && cfg.TLSKeyFile == "" {
+		cert, key, err := config.EnsureSelfSignedCert(cfg.DataDir)
+		if err != nil {
+			logger.Error("auto-tls generate", "err", err)
+			os.Exit(1)
+		}
+		cfg.TLSCertFile = cert
+		cfg.TLSKeyFile = key
+		logger.Info("auto-tls: using self-signed certificate", "cert", cert)
+	}
+
 	if err := cfg.Save(*configPath); err != nil {
 		logger.Error("save config", "err", err)
 		os.Exit(1)
@@ -110,6 +127,9 @@ func main() {
 	r.Use(middleware.IPAllowList(cfg.AllowedIPs))
 	r.Use(middleware.SecurityHeaders)
 	r.Use(middleware.RateLimit(globalLim))
+	// EntryGate must precede CSRF issuance: unauthenticated scanners should
+	// see 404 (no Set-Cookie, no fingerprint), not a CSRF cookie.
+	r.Use(middleware.EntryGate(cfg.EntryPath, cfg.EntrySecret, cfg.DevMode))
 	r.Use(middleware.CSRFIssue)
 
 	r.Route("/api", func(r chi.Router) {
@@ -127,6 +147,7 @@ func main() {
 			r.Post("/account/totp/disable", s.TotpDisable)
 			r.Get("/me", s.Me)
 			r.Get("/system/overview", s.Overview)
+			r.Get("/system/processes", s.Processes)
 			r.Get("/audit", s.Audit)
 			r.Get("/security/recent-attempts", s.RecentAttempts)
 		})
@@ -194,6 +215,19 @@ func firstRunInit(cfg *config.Config, st *storage.Store, logger *slog.Logger) er
 		return nil
 	}
 
+	// Generate entry path on first run if not already set. Kept separate from
+	// the user-create check so rotating the path doesn't require DB reset.
+	if cfg.EntryPath == "" && !cfg.DevMode {
+		ep, err := config.RandomEntryPath(10)
+		if err != nil {
+			return err
+		}
+		cfg.EntryPath = ep
+		// Persist the new entry path immediately. The config file path is
+		// always data_dir/config.json for installed deployments.
+		_ = cfg.Save(filepath.Join(cfg.DataDir, "config.json"))
+	}
+
 	var username, password string
 	var mustChange bool
 	if cfg.DevMode {
@@ -245,35 +279,47 @@ func firstRunInit(cfg *config.Config, st *storage.Store, logger *slog.Logger) er
 	content := fmt.Sprintf(`ops-panel first-run credentials
 ================================
 
-Username: %s
-Password: %s
+Access URL:  https://<YOUR_SERVER_IP>:<PORT>/%s/
+Username:    %s
+Password:    %s
+
+The "entry path" above is a BT/1panel-style security entrance: any URL that
+doesn't first hit /%s/ returns 404, so scanners cannot fingerprint this
+panel. Bookmark the full URL (including the trailing path) — you'll need it
+every time your entry cookie expires (24h).
 
 IMPORTANT:
-  1. Log in with the credentials above.
-  2. You will be forced to change the password on first login.
-  3. After login, go to "Account" in the sidebar and bind an Authenticator app
-     (Google Authenticator / Authy / 1Password / Aegis). TOTP is OPTIONAL but
+  1. Open the Access URL in a browser. First visit accepts the self-signed
+     cert warning and establishes the entry cookie.
+  2. Log in with the credentials above.
+  3. You will be forced to change the password on first login.
+  4. Go to "Account" in the sidebar and bind an Authenticator app (Google
+     Authenticator / Authy / 1Password / Aegis). TOTP is OPTIONAL but
      STRONGLY recommended for any internet-exposed deployment.
-  4. Delete this file after successful login.
+  5. Delete this file after successful login.
 
-Note: both username and password are randomly generated per-install. If you
-lose them, use `+"`opsctl passwd <user>`"+` to reset the password, or check this
-file. You can rename the user later from the DB if you want a friendlier name.
-`, username, password)
+Recovery:
+  - Forgot password:  opsctl passwd <user>
+  - Lost Authenticator:  opsctl reset-2fa <user>
+  - Lost entry path:  grep entry_path /var/lib/ops-panel/config.json
+`, cfg.EntryPath, username, password, cfg.EntryPath)
 	if err := os.WriteFile(credPath, []byte(content), 0o600); err != nil {
 		return err
 	}
 
-	logger.Warn("FIRST RUN — admin credentials written", "file", credPath, "username", username)
+	logger.Warn("FIRST RUN — admin credentials written", "file", credPath, "username", username, "entry_path", cfg.EntryPath)
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "===========================================================")
 	fmt.Fprintln(os.Stderr, "  ops-panel FIRST RUN")
 	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "  Username: "+username)
-	fmt.Fprintln(os.Stderr, "  Password: "+password)
+	fmt.Fprintln(os.Stderr, "  Entry path: /"+cfg.EntryPath+"/")
+	fmt.Fprintln(os.Stderr, "  Username:   "+username)
+	fmt.Fprintln(os.Stderr, "  Password:   "+password)
 	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "  ⚠  Change password on first login, then bind Authenticator")
-	fmt.Fprintln(os.Stderr, "     from the Account page in the sidebar.")
+	fmt.Fprintln(os.Stderr, "  Access URL:  https://<SERVER_IP>:<PORT>/"+cfg.EntryPath+"/")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "  ⚠  First visit: accept self-signed cert warning.")
+	fmt.Fprintln(os.Stderr, "     Any URL without the entry path returns 404.")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "  (also saved to: "+credPath+")")
 	fmt.Fprintln(os.Stderr, "===========================================================")
