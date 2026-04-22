@@ -1,0 +1,43 @@
+[Unit]
+Description=Ops Panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opspanel
+Group=opspanel
+ExecStart=/usr/local/bin/ops-panel \
+    -config /var/lib/ops-panel/config.json \
+    -frontend /var/lib/ops-panel/frontend
+Restart=on-failure
+RestartSec=5
+
+# Sandboxing
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ops-panel
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelLogs=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Network
+IPAddressAllow=localhost
+IPAddressDeny=any
+
+[Install]
+WantedBy=multi-user.target
