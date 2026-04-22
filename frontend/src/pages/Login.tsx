@@ -53,7 +53,7 @@ export default function Login() {
             <div className="flex-1">
               <CardTitle className="text-lg">Ops Panel</CardTitle>
               <CardDescription className="text-xs">
-                {devMode ? "DEV 模式 · admin / admin · TOTP 已禁用" : "密码 + 动态验证码（TOTP）"}
+                {devMode ? "DEV 模式 · admin / admin" : "密码 + 动态验证码（若已绑定）"}
               </CardDescription>
             </div>
             {devMode && <Badge variant="warning">DEV</Badge>}
@@ -88,7 +88,9 @@ export default function Login() {
             </div>
             {!devMode && (
               <div className="space-y-1.5">
-                <Label htmlFor="code">动态验证码 (6 位)</Label>
+                <Label htmlFor="code">
+                  动态验证码 <span className="text-muted-foreground text-[11px]">（未绑定可留空）</span>
+                </Label>
                 <Input
                   id="code"
                   inputMode="numeric"
@@ -98,7 +100,7 @@ export default function Login() {
                   onChange={(e) => setC(e.target.value.replace(/\D/g, "").slice(0, 6))}
                   autoComplete="one-time-code"
                   className="text-center font-mono tracking-widest"
-                  required
+                  placeholder="123456"
                 />
               </div>
             )}
@@ -111,7 +113,7 @@ export default function Login() {
               {loading ? "登录中..." : "登录"}
             </Button>
             <p className="text-[11px] leading-4 text-muted-foreground">
-              提示：本面板默认只监听 127.0.0.1。生产环境请走 Tailscale / WireGuard / Cloudflare Tunnel 访问。
+              提示：首次登录只需密码。登录后请到"账号"页绑定 Authenticator 开启双因素。
             </p>
           </form>
         </CardContent>

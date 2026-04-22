@@ -1,8 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
+	"image/png"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -118,7 +121,7 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 		reject("bad password")
 		return
 	}
-	if !s.Cfg.DevMode && !auth.VerifyTOTP(u.TOTPSecret, req.Code) {
+	if !s.Cfg.DevMode && u.TOTPSecret != "" && !auth.VerifyTOTP(u.TOTPSecret, req.Code) {
 		reject("bad totp")
 		return
 	}
@@ -216,6 +219,7 @@ func (s *Server) Me(w http.ResponseWriter, r *http.Request) {
 		"username":             u.Username,
 		"created_at":           u.CreatedAt,
 		"must_change_password": u.MustChangePassword,
+		"has_totp":             u.TOTPSecret != "",
 	})
 }
 
@@ -283,7 +287,7 @@ func (s *Server) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "old password incorrect")
 		return
 	}
-	if !s.Cfg.DevMode && !auth.VerifyTOTP(u.TOTPSecret, req.Code) {
+	if !s.Cfg.DevMode && u.TOTPSecret != "" && !auth.VerifyTOTP(u.TOTPSecret, req.Code) {
 		writeErr(w, http.StatusUnauthorized, "totp incorrect")
 		return
 	}
@@ -304,6 +308,125 @@ func (s *Server) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		UserID: sql.NullInt64{Int64: userID, Valid: true},
 		IP:     middleware.IP(r.Context()),
 		Action: "password.change",
+	})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// TotpSetup generates a fresh TOTP secret and QR code for the current user.
+// The secret is NOT persisted yet — the client must call TotpConfirm with the
+// same secret + a valid 6-digit code from their authenticator app to activate.
+func (s *Server) TotpSetup(w http.ResponseWriter, r *http.Request) {
+	userID, _ := middleware.UserID(r.Context())
+	u, err := s.Store.GetUserByID(userID)
+	if err != nil || u == nil {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	key, err := auth.GenerateTOTP(s.Cfg.Issuer, u.Username)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "totp generate failed")
+		return
+	}
+	img, err := key.Image(240, 240)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "qr generate failed")
+		return
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		writeErr(w, http.StatusInternalServerError, "qr encode failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"secret":        key.Secret(),
+		"otpauth_url":   key.URL(),
+		"qr_png_base64": base64.StdEncoding.EncodeToString(buf.Bytes()),
+	})
+}
+
+type totpConfirmReq struct {
+	Secret   string `json:"secret"`
+	Code     string `json:"code"`
+	Password string `json:"password"`
+}
+
+func (s *Server) TotpConfirm(w http.ResponseWriter, r *http.Request) {
+	userID, _ := middleware.UserID(r.Context())
+	u, err := s.Store.GetUserByID(userID)
+	if err != nil || u == nil {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	var req totpConfirmReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad request")
+		return
+	}
+	if req.Secret == "" || req.Code == "" {
+		writeErr(w, http.StatusBadRequest, "secret and code required")
+		return
+	}
+	if !auth.VerifyPassword(req.Password, u.PasswordHash) {
+		writeErr(w, http.StatusUnauthorized, "password incorrect")
+		return
+	}
+	if !auth.VerifyTOTP(req.Secret, req.Code) {
+		writeErr(w, http.StatusUnauthorized, "code incorrect")
+		return
+	}
+	if err := s.Store.UpdateTOTPSecret(userID, req.Secret); err != nil {
+		writeErr(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	action := "totp.bind"
+	if u.TOTPSecret != "" {
+		action = "totp.rebind"
+	}
+	_ = s.Store.WriteAudit(storage.AuditEntry{
+		UserID: sql.NullInt64{Int64: userID, Valid: true},
+		IP:     middleware.IP(r.Context()),
+		Action: action,
+	})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+type totpDisableReq struct {
+	Password string `json:"password"`
+	Code     string `json:"code"`
+}
+
+func (s *Server) TotpDisable(w http.ResponseWriter, r *http.Request) {
+	userID, _ := middleware.UserID(r.Context())
+	u, err := s.Store.GetUserByID(userID)
+	if err != nil || u == nil {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	if u.TOTPSecret == "" {
+		writeErr(w, http.StatusBadRequest, "totp not bound")
+		return
+	}
+	var req totpDisableReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad request")
+		return
+	}
+	if !auth.VerifyPassword(req.Password, u.PasswordHash) {
+		writeErr(w, http.StatusUnauthorized, "password incorrect")
+		return
+	}
+	if !auth.VerifyTOTP(u.TOTPSecret, req.Code) {
+		writeErr(w, http.StatusUnauthorized, "code incorrect")
+		return
+	}
+	if err := s.Store.UpdateTOTPSecret(userID, ""); err != nil {
+		writeErr(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	_ = s.Store.WriteAudit(storage.AuditEntry{
+		UserID: sql.NullInt64{Int64: userID, Valid: true},
+		IP:     middleware.IP(r.Context()),
+		Action: "totp.unbind",
 	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

@@ -6,6 +6,7 @@ type Me = {
   username: string;
   created_at: string;
   must_change_password: boolean;
+  has_totp: boolean;
 };
 
 type Ctx = {

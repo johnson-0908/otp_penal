@@ -174,6 +174,11 @@ func (s *Store) UpdatePassword(userID int64, hash string) error {
 	return err
 }
 
+func (s *Store) UpdateTOTPSecret(userID int64, secret string) error {
+	_, err := s.db.Exec(`UPDATE users SET totp_secret = ? WHERE id = ?`, secret, userID)
+	return err
+}
+
 func (s *Store) CreateSession(sess Session) error {
 	_, err := s.db.Exec(
 		`INSERT INTO sessions(user_id, jti, expires_at, user_agent, ip) VALUES (?,?,?,?,?)`,
