@@ -126,6 +126,11 @@ msg "安装二进制到: $BIN"
 install -d -m 0755 "$OPS_PREFIX/bin"
 install -m 0755 "$SRC_ROOT/ops-panel" "$BIN"
 
+if [ -f "$SRC_ROOT/scripts/opsctl" ]; then
+  msg "安装管理 CLI 到: $OPS_PREFIX/bin/opsctl"
+  install -m 0755 "$SRC_ROOT/scripts/opsctl" "$OPS_PREFIX/bin/opsctl"
+fi
+
 msg "安装前端到: $FRONTEND_DIR"
 install -d -o "$OPS_USER" -g "$OPS_USER" -m 0750 "$OPS_DATA_DIR"
 rm -rf "$FRONTEND_DIR"
@@ -255,7 +260,16 @@ fi
 
 cat <<EOF
 
-  管理命令:
+  管理命令 (opsctl):
+    opsctl status                  服务状态 + URL + 用户列表
+    opsctl restart                 重启服务
+    opsctl logs [-f]               查看日志
+    opsctl passwd [user]           重置密码
+    opsctl reset-2fa [user]        解绑 Authenticator
+    opsctl uninstall               卸载面板
+    opsctl help                    更多命令
+
+  原生命令:
     systemctl {status|restart|stop} ops-panel
     journalctl -u ops-panel -f
 

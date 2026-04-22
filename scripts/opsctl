@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+# opsctl — ops-panel server-side management CLI
+#
+# Installed to /usr/local/bin/opsctl by install.sh. Wraps systemd + the
+# `ops-panel admin` subcommands for day-to-day management.
+#
+# Usage:
+#   opsctl status              show service + URL + admin TOTP state
+#   opsctl start|stop|restart  systemctl wrappers
+#   opsctl logs [-f]           journalctl -u ops-panel
+#   opsctl info                JSON: config + users
+#   opsctl passwd [user]       reset a user's password (interactive)
+#   opsctl reset-2fa [user]    unbind Authenticator for a user
+#   opsctl uninstall           remove the panel (big confirmation)
+#   opsctl version             print ops-panel version
+#   opsctl help                this help
+#
+# Environment overrides (rarely needed):
+#   OPS_BIN       default /usr/local/bin/ops-panel
+#   OPS_DATA_DIR  default /var/lib/ops-panel
+#   OPS_USER      default opspanel
+#   OPS_UNIT      default ops-panel.service
+#   OPS_PREFIX    default /usr/local
+
+set -euo pipefail
+
+OPS_BIN="${OPS_BIN:-/usr/local/bin/ops-panel}"
+OPS_DATA_DIR="${OPS_DATA_DIR:-/var/lib/ops-panel}"
+OPS_USER="${OPS_USER:-opspanel}"
+OPS_UNIT="${OPS_UNIT:-ops-panel.service}"
+OPS_PREFIX="${OPS_PREFIX:-/usr/local}"
+
+C_RESET="\033[0m"; C_RED="\033[31m"; C_GREEN="\033[32m"; C_YELLOW="\033[33m"; C_CYAN="\033[36m"; C_DIM="\033[2m"; C_BOLD="\033[1m"
+
+msg()  { echo -e "${C_CYAN}==>${C_RESET} $*"; }
+warn() { echo -e "${C_YELLOW}!! $*${C_RESET}" >&2; }
+err()  { echo -e "${C_RED}XX $*${C_RESET}" >&2; exit 1; }
+
+need_root() {
+  [ "$(id -u)" = 0 ] || err "此命令需要 root (使用 sudo opsctl $*)"
+}
+
+need_bin() {
+  [ -x "$OPS_BIN" ] || err "找不到 ops-panel 二进制: $OPS_BIN"
+}
+
+admin() {
+  # Shell out to the Go admin CLI. Must be root because config + DB are
+  # owned by the service user.
+  need_root "${@:-}"
+  need_bin
+  sudo -u "$OPS_USER" "$OPS_BIN" admin "$@" -data-dir "$OPS_DATA_DIR"
+}
+
+cmd_status() {
+  need_bin
+  local active enabled listen
+  active=$(systemctl is-active "$OPS_UNIT" 2>/dev/null || true)
+  enabled=$(systemctl is-enabled "$OPS_UNIT" 2>/dev/null || true)
+  listen=""
+  if [ -f "$OPS_DATA_DIR/config.json" ]; then
+    listen=$(grep -Po '"listen_addr"\s*:\s*"\K[^"]+' "$OPS_DATA_DIR/config.json" 2>/dev/null || true)
+  fi
+
+  echo -e "${C_BOLD}ops-panel${C_RESET}"
+  echo "  unit:     $OPS_UNIT"
+  if [ "$active" = "active" ]; then
+    echo -e "  status:   ${C_GREEN}$active${C_RESET} ($enabled)"
+  else
+    echo -e "  status:   ${C_RED}${active:-unknown}${C_RESET} ($enabled)"
+  fi
+  echo "  listen:   ${listen:-?}"
+  echo "  data:     $OPS_DATA_DIR"
+  echo "  binary:   $OPS_BIN"
+  if "$OPS_BIN" version >/dev/null 2>&1; then
+    echo "  version:  $("$OPS_BIN" version 2>&1 | awk '{print $2}')"
+  fi
+  echo ""
+
+  if [ "$active" = "active" ] && [ -n "$listen" ]; then
+    local health
+    health=$(curl -fsS --max-time 2 "http://$listen/api/health" 2>/dev/null || true)
+    if [ -n "$health" ]; then
+      echo -e "  ${C_GREEN}health OK${C_RESET}: $health"
+    else
+      warn "health 端点无响应 (检查 $listen)"
+    fi
+  fi
+
+  # Show a compact user summary if DB is available.
+  if [ -f "$OPS_DATA_DIR/panel.db" ] && [ "$(id -u)" = 0 ]; then
+    echo ""
+    echo -e "${C_DIM}users:${C_RESET}"
+    sudo -u "$OPS_USER" "$OPS_BIN" admin list-users -data-dir "$OPS_DATA_DIR" 2>/dev/null \
+      | sed 's/^/  /' || true
+  fi
+
+  local cred="$OPS_DATA_DIR/FIRST_RUN_CREDENTIALS.txt"
+  if [ -f "$cred" ]; then
+    echo ""
+    warn "首次运行凭据文件仍存在: $cred"
+    warn "登录后请用 'opsctl cleanup-cred' 或手动 rm 删除"
+  fi
+}
+
+cmd_start()   { need_root "$@"; systemctl start   "$OPS_UNIT"; msg "started"; }
+cmd_stop()    { need_root "$@"; systemctl stop    "$OPS_UNIT"; msg "stopped"; }
+cmd_restart() { need_root "$@"; systemctl restart "$OPS_UNIT"; msg "restarted"; }
+
+cmd_logs() {
+  need_root logs
+  if [ "${1:-}" = "-f" ] || [ "${1:-}" = "--follow" ]; then
+    journalctl -u "$OPS_UNIT" -f
+  else
+    local n="${1:-100}"
+    journalctl -u "$OPS_UNIT" -n "$n" --no-pager
+  fi
+}
+
+cmd_info() {
+  admin info "$@"
+}
+
+cmd_passwd() {
+  local user="${1:-admin}"
+  need_root passwd
+  need_bin
+  echo "即将为用户 '$user' 重置密码 (至少 12 位)."
+  local pw confirm
+  # Read with -s (no echo) when interactive; fall back to plain read otherwise.
+  if [ -t 0 ]; then
+    read -r -s -p "新密码: " pw; echo
+    read -r -s -p "确认新密码: " confirm; echo
+    if [ "$pw" != "$confirm" ]; then err "两次密码不一致"; fi
+  else
+    read -r pw
+  fi
+  if [ "${#pw}" -lt 12 ]; then err "密码至少 12 位"; fi
+
+  # Pass via stdin (admin reset-password supports non-TTY single-read).
+  printf '%s' "$pw" | sudo -u "$OPS_USER" "$OPS_BIN" admin reset-password -user "$user" -data-dir "$OPS_DATA_DIR"
+  msg "密码已更新 — 下次登录生效 (已有会话不受影响, 可 restart 强制下线)"
+}
+
+cmd_reset_2fa() {
+  local user="${1:-admin}"
+  need_root reset-2fa
+  need_bin
+  echo -e "${C_YELLOW}将解绑用户 '$user' 的 Authenticator. 下次登录只需密码.${C_RESET}"
+  read -r -p "确认? 输入 'yes' 继续: " ans
+  if [ "$ans" != "yes" ]; then msg "已取消"; return; fi
+  sudo -u "$OPS_USER" "$OPS_BIN" admin reset-totp -user "$user" -yes -data-dir "$OPS_DATA_DIR"
+  msg "完成. 用户可登录后到账号页重新绑定."
+}
+
+cmd_cleanup_cred() {
+  need_root cleanup-cred
+  local cred="$OPS_DATA_DIR/FIRST_RUN_CREDENTIALS.txt"
+  if [ -f "$cred" ]; then
+    rm -f "$cred"
+    msg "已删除 $cred"
+  else
+    msg "凭据文件不存在 (已清理)"
+  fi
+}
+
+cmd_uninstall() {
+  need_root uninstall
+  echo -e "${C_RED}${C_BOLD}"
+  echo "============================================="
+  echo "  准备卸载 ops-panel"
+  echo "============================================="
+  echo -e "${C_RESET}"
+  echo "将执行:"
+  echo "  1. systemctl stop + disable $OPS_UNIT"
+  echo "  2. rm /etc/systemd/system/$OPS_UNIT"
+  echo "  3. rm $OPS_BIN"
+  echo "  4. rm $OPS_PREFIX/bin/opsctl"
+  echo ""
+  echo -e "${C_YELLOW}可选 (会询问):${C_RESET}"
+  echo "  5. rm -rf $OPS_DATA_DIR   (含 SQLite DB、配置、审计日志)"
+  echo "  6. userdel $OPS_USER"
+  echo ""
+  read -r -p "继续? 输入 'uninstall' 确认: " ans
+  if [ "$ans" != "uninstall" ]; then msg "已取消"; return; fi
+
+  msg "停止服务"
+  systemctl stop    "$OPS_UNIT" 2>/dev/null || true
+  systemctl disable "$OPS_UNIT" 2>/dev/null || true
+
+  local unit_path="/etc/systemd/system/$OPS_UNIT"
+  if [ -f "$unit_path" ]; then rm -f "$unit_path"; msg "rm $unit_path"; fi
+  systemctl daemon-reload
+
+  if [ -f "$OPS_BIN" ]; then rm -f "$OPS_BIN"; msg "rm $OPS_BIN"; fi
+  if [ -f "$OPS_PREFIX/bin/opsctl" ]; then rm -f "$OPS_PREFIX/bin/opsctl"; msg "rm $OPS_PREFIX/bin/opsctl"; fi
+
+  echo ""
+  read -r -p "删除数据目录 $OPS_DATA_DIR (y/N)? " a1
+  if [[ "$a1" =~ ^[Yy]$ ]]; then
+    rm -rf "$OPS_DATA_DIR"
+    msg "rm -rf $OPS_DATA_DIR"
+  else
+    warn "保留了 $OPS_DATA_DIR (含 DB + 审计日志, 可手动 rm -rf)"
+  fi
+
+  echo ""
+  read -r -p "删除服务用户 $OPS_USER (y/N)? " a2
+  if [[ "$a2" =~ ^[Yy]$ ]]; then
+    userdel "$OPS_USER" 2>/dev/null || warn "userdel 失败 (用户可能已不存在)"
+    msg "userdel $OPS_USER"
+  fi
+
+  echo ""
+  msg "卸载完成"
+}
+
+cmd_version() {
+  if [ -x "$OPS_BIN" ]; then
+    "$OPS_BIN" version
+  else
+    err "$OPS_BIN 不存在"
+  fi
+}
+
+cmd_help() {
+  sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+case "${1:-help}" in
+  status)        shift; cmd_status "$@" ;;
+  start)         shift; cmd_start  "$@" ;;
+  stop)          shift; cmd_stop   "$@" ;;
+  restart)       shift; cmd_restart "$@" ;;
+  logs)          shift; cmd_logs   "$@" ;;
+  info)          shift; cmd_info   "$@" ;;
+  passwd)        shift; cmd_passwd "$@" ;;
+  reset-2fa)     shift; cmd_reset_2fa "$@" ;;
+  cleanup-cred)  shift; cmd_cleanup_cred "$@" ;;
+  uninstall)     shift; cmd_uninstall "$@" ;;
+  version|-v|--version) cmd_version ;;
+  help|-h|--help) cmd_help ;;
+  *)
+    err "未知命令: ${1}. 试试 'opsctl help'"
+    ;;
+esac

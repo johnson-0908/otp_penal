@@ -179,6 +179,43 @@ func (s *Store) UpdateTOTPSecret(userID int64, secret string) error {
 	return err
 }
 
+func (s *Store) SetMustChangePassword(userID int64, v bool) error {
+	_, err := s.db.Exec(`UPDATE users SET must_change_password = ? WHERE id = ?`, boolToInt(v), userID)
+	return err
+}
+
+// UserBrief is a DB-only view used by the admin CLI. Excludes password hash
+// and TOTP secret; exposes has_totp instead of the raw secret.
+type UserBrief struct {
+	ID                 int64     `json:"id"`
+	Username           string    `json:"username"`
+	CreatedAt          time.Time `json:"created_at"`
+	MustChangePassword bool      `json:"must_change_password"`
+	HasTOTP            bool      `json:"has_totp"`
+}
+
+func (s *Store) ListUsersBrief() ([]UserBrief, error) {
+	rows, err := s.db.Query(`SELECT id, username, created_at, must_change_password,
+	                                CASE WHEN totp_secret = '' THEN 0 ELSE 1 END
+	                         FROM users ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []UserBrief{}
+	for rows.Next() {
+		var u UserBrief
+		var mcp, hasTOTP int
+		if err := rows.Scan(&u.ID, &u.Username, &u.CreatedAt, &mcp, &hasTOTP); err != nil {
+			return nil, err
+		}
+		u.MustChangePassword = mcp == 1
+		u.HasTOTP = hasTOTP == 1
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) CreateSession(sess Session) error {
 	_, err := s.db.Exec(
 		`INSERT INTO sessions(user_id, jti, expires_at, user_agent, ip) VALUES (?,?,?,?,?)`,

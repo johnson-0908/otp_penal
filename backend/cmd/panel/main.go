@@ -27,6 +27,19 @@ import (
 )
 
 func main() {
+	// Subcommands. `ops-panel admin <sub>` routes to the admin CLI
+	// (used by the `opsctl` wrapper for on-server management).
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "admin":
+			adminMain(os.Args[2:])
+			return
+		case "version", "-v", "--version":
+			fmt.Println("ops-panel", versionString())
+			return
+		}
+	}
+
 	var (
 		configPath = flag.String("config", "", "path to config.json (default: $data_dir/config.json)")
 		dataDir    = flag.String("data-dir", "", "data directory (overrides config)")

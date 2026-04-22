@@ -58,13 +58,14 @@ for ARCH in amd64 arm64; do
 
   cp -r frontend/dist "$STAGE/frontend"
   cp scripts/install.sh "$STAGE/scripts/install.sh"
+  cp scripts/opsctl "$STAGE/scripts/opsctl"
   cp scripts/ops-panel.service "$STAGE/scripts/ops-panel.service"
   cp scripts/generate-cert.sh "$STAGE/scripts/generate-cert.sh" 2>/dev/null || true
   cp scripts/ssh-harden.sh "$STAGE/scripts/ssh-harden.sh" 2>/dev/null || true
   echo "$VERSION" > "$STAGE/VERSION"
   cp README.md "$STAGE/README.md"
 
-  chmod +x "$STAGE/ops-panel" "$STAGE/scripts/"*.sh
+  chmod +x "$STAGE/ops-panel" "$STAGE/scripts/opsctl" "$STAGE/scripts/"*.sh
 
   TARBALL="dist/ops-panel-$VERSION-linux-$ARCH.tar.gz"
   tar -czf "$TARBALL" -C "dist" "stage-linux-$ARCH" \

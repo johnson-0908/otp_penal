@@ -165,6 +165,24 @@ http://<server-tailscale-ip>:8443
 
 这样 ops-panel 根本不需要公网暴露，`ListenAddr` 可以一直是 `127.0.0.1:8443`。
 
+## 服务器管理 CLI (`opsctl`)
+
+`install.sh` 会顺手装一个 `opsctl` 到 `/usr/local/bin/`，在服务器上登录 root / sudo 用：
+
+```bash
+opsctl status           # 服务状态 + URL + 用户列表 + admin 是否绑定 TOTP
+opsctl restart          # 重启
+opsctl logs -f          # 跟日志（等价于 journalctl -u ops-panel -f）
+opsctl passwd [user]    # 交互式重置密码（默认 user=admin）
+opsctl reset-2fa [user] # 解绑 Authenticator（手机丢了用这个，之后登录只需密码）
+opsctl info             # JSON 输出：配置 + 用户列表，给脚本吃
+opsctl cleanup-cred     # 删除 FIRST_RUN_CREDENTIALS.txt
+opsctl uninstall        # 卸载（大红字二次确认，可选是否一起删数据目录和服务用户）
+opsctl help             # 完整命令列表
+```
+
+底层是 systemd + 主二进制的 `ops-panel admin <subcommand>`（需要 root，因为 DB 归 `opspanel` 用户）。脚本化场景也可以直接调 `sudo -u opspanel /usr/local/bin/ops-panel admin ...`。
+
 ## 配置文件
 
 `~/.ops-panel/config.json`（或 `-config` 指定）：
