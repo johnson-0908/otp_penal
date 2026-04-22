@@ -71,6 +71,32 @@ for ARCH in amd64 arm64; do
   tar -czf "$TARBALL" -C "dist" "stage-linux-$ARCH" \
     --transform "s|stage-linux-$ARCH|ops-panel-$VERSION-linux-$ARCH|"
 
+  # When building on Windows (MinGW/git-bash), NTFS doesn't preserve the
+  # Unix execute bit on files without a .sh/.exe extension, so `chmod +x`
+  # on the Go binary doesn't make it into the tar. Post-process the tar
+  # with Python to force 0755 on executables.
+  python -c "
+import tarfile, os, sys
+src = sys.argv[1]
+tmp = src + '.tmp'
+execs = ('/ops-panel',)
+execs_endswith = ('.sh', '/opsctl')
+with tarfile.open(src, 'r:gz') as tin, tarfile.open(tmp, 'w:gz') as tout:
+    for m in tin.getmembers():
+        name = m.name
+        if name.endswith(execs) or any(name.endswith(s) for s in execs_endswith):
+            m.mode = 0o755
+        elif m.isdir():
+            m.mode = 0o755
+        else:
+            m.mode = 0o644
+        f = tin.extractfile(m) if m.isfile() else None
+        tout.addfile(m, f)
+os.replace(tmp, src)
+" "$TARBALL" 2>/dev/null || {
+    echo "    !! python post-process failed; binary may lack +x on extract. install.sh handles this defensively." >&2
+  }
+
   rm -rf "$STAGE"
   echo "    -> $TARBALL"
 done

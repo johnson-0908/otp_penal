@@ -68,10 +68,16 @@ fi
 # ---------- 3. decide source: local tarball or github ----------
 LOCAL_MODE=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd || true)"
-if [ -n "$SCRIPT_DIR" ] && [ -x "$SCRIPT_DIR/../ops-panel" ] && [ -d "$SCRIPT_DIR/../frontend" ]; then
+# Check for -f (exists) not -x (executable) — some Windows-built tarballs lose
+# the execute bit on the Go binary because NTFS/MinGW chmod doesn't always stick
+# for files without a .sh/.exe extension. We'll chmod ourselves below.
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/../ops-panel" ] && [ -d "$SCRIPT_DIR/../frontend" ]; then
   LOCAL_MODE=1
   SRC_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
   msg "检测到已解压的本地 tarball: $SRC_ROOT"
+  chmod +x "$SRC_ROOT/ops-panel" 2>/dev/null || true
+  chmod +x "$SRC_ROOT/scripts/"*.sh 2>/dev/null || true
+  [ -f "$SRC_ROOT/scripts/opsctl" ] && chmod +x "$SRC_ROOT/scripts/opsctl"
 fi
 
 WORK=""
