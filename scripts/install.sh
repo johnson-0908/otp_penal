@@ -67,7 +67,14 @@ fi
 
 # ---------- 3. decide source: local tarball or github ----------
 LOCAL_MODE=""
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd || true)"
+# When invoked via `curl ... | bash`, BASH_SOURCE is unset — guard the lookup
+# with a default so `set -u` doesn't abort. This branch is only for the
+# local-tarball use case, so falling back to "" is correct.
+BASH_SOURCE_PATH="${BASH_SOURCE[0]:-}"
+SCRIPT_DIR=""
+if [ -n "$BASH_SOURCE_PATH" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "$BASH_SOURCE_PATH")" >/dev/null 2>&1 && pwd || true)"
+fi
 # Check for -f (exists) not -x (executable) — some Windows-built tarballs lose
 # the execute bit on the Go binary because NTFS/MinGW chmod doesn't always stick
 # for files without a .sh/.exe extension. We'll chmod ourselves below.
@@ -101,11 +108,15 @@ if [ -z "$LOCAL_MODE" ]; then
   curl -fL --retry 3 -o "$WORK/$TARBALL" "$URL" \
     || err "下载失败。检查网络或 OPS_VERSION 是否正确。"
 
-  # Optional checksum
-  if curl -fsSL "https://github.com/$OPS_REPO/releases/download/$OPS_VERSION/SHA256SUMS" -o "$WORK/SHA256SUMS" 2>/dev/null; then
+  # Optional checksum. `sha256sum` emits `HASH  FILE` (text) or `HASH *FILE`
+  # (binary) — `-c --ignore-missing` handles both and skips entries for files
+  # we didn't download (we only grabbed one arch).
+  if [ "${OPS_SKIP_VERIFY:-0}" = "1" ]; then
+    warn "OPS_SKIP_VERIFY=1 — 跳过 SHA256 校验"
+  elif curl -fsSL "https://github.com/$OPS_REPO/releases/download/$OPS_VERSION/SHA256SUMS" -o "$WORK/SHA256SUMS" 2>/dev/null; then
     msg "校验 SHA256..."
-    (cd "$WORK" && grep " $TARBALL\$" SHA256SUMS | sha256sum -c -) \
-      || err "SHA256 校验失败 — 安装包可能被篡改"
+    (cd "$WORK" && sha256sum -c --ignore-missing SHA256SUMS >/dev/null) \
+      || err "SHA256 校验失败 — 安装包可能被篡改（如需跳过：OPS_SKIP_VERIFY=1）"
   else
     warn "未发布 SHA256SUMS，跳过校验"
   fi
