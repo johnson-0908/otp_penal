@@ -127,8 +127,9 @@ if [ -z "$LOCAL_MODE" ]; then
   [ -n "$SRC_ROOT" ] || err "解压后的目录结构不符合预期"
 fi
 
-[ -x "$SRC_ROOT/ops-panel" ] || err "找不到可执行文件: $SRC_ROOT/ops-panel"
+[ -f "$SRC_ROOT/ops-panel" ] || err "找不到二进制: $SRC_ROOT/ops-panel"
 [ -d "$SRC_ROOT/frontend" ]  || err "找不到前端目录: $SRC_ROOT/frontend"
+chmod +x "$SRC_ROOT/ops-panel" 2>/dev/null || true
 
 # ---------- 4. service user ----------
 if ! id -u "$OPS_USER" >/dev/null 2>&1; then
@@ -159,10 +160,11 @@ chown -R "$OPS_USER:$OPS_USER" "$FRONTEND_DIR"
 msg "写入 systemd unit: $UNIT_PATH"
 if [ -f "$SRC_ROOT/scripts/ops-panel.service" ]; then
   cp "$SRC_ROOT/scripts/ops-panel.service" "$UNIT_PATH"
-  # Patch user / paths if caller overrode defaults
+  # Patch user / paths / listen if caller overrode defaults
   sed -i "s|^User=.*|User=$OPS_USER|; s|^Group=.*|Group=$OPS_USER|" "$UNIT_PATH"
   sed -i "s|/usr/local/bin/ops-panel|$BIN|g" "$UNIT_PATH"
   sed -i "s|/var/lib/ops-panel|$OPS_DATA_DIR|g" "$UNIT_PATH"
+  sed -i "s|-listen 127\\.0\\.0\\.1:8443|-listen $OPS_LISTEN|g" "$UNIT_PATH"
 else
   cat > "$UNIT_PATH" <<EOF
 [Unit]
@@ -174,7 +176,7 @@ Wants=network-online.target
 Type=simple
 User=$OPS_USER
 Group=$OPS_USER
-ExecStart=$BIN -config $OPS_DATA_DIR/config.json -frontend $FRONTEND_DIR -listen $OPS_LISTEN
+ExecStart=$BIN -data-dir $OPS_DATA_DIR -config $OPS_DATA_DIR/config.json -frontend $FRONTEND_DIR -listen $OPS_LISTEN
 Restart=on-failure
 RestartSec=5
 

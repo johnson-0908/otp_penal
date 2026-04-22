@@ -194,16 +194,22 @@ func firstRunInit(cfg *config.Config, st *storage.Store, logger *slog.Logger) er
 		return nil
 	}
 
-	var password string
+	var username, password string
 	var mustChange bool
 	if cfg.DevMode {
+		username = "admin"
 		password = "admin"
 		mustChange = false
 	} else {
+		u, err := config.RandomUsername("ops", 8)
+		if err != nil {
+			return err
+		}
 		pw, err := config.RandomPassword(20)
 		if err != nil {
 			return err
 		}
+		username = u
 		password = pw
 		mustChange = true
 	}
@@ -214,7 +220,7 @@ func firstRunInit(cfg *config.Config, st *storage.Store, logger *slog.Logger) er
 	}
 
 	id, err := st.CreateUser(storage.User{
-		Username: "admin", PasswordHash: hash, TOTPSecret: "",
+		Username: username, PasswordHash: hash, TOTPSecret: "",
 		MustChangePassword: mustChange,
 	})
 	if err != nil {
@@ -222,7 +228,7 @@ func firstRunInit(cfg *config.Config, st *storage.Store, logger *slog.Logger) er
 	}
 	_ = st.WriteAudit(storage.AuditEntry{
 		UserID: sql.NullInt64{Int64: id, Valid: true},
-		Action: "user.create", Detail: "first-run admin",
+		Action: "user.create", Detail: "first-run admin: " + username,
 	})
 
 	if cfg.DevMode {
@@ -239,7 +245,7 @@ func firstRunInit(cfg *config.Config, st *storage.Store, logger *slog.Logger) er
 	content := fmt.Sprintf(`ops-panel first-run credentials
 ================================
 
-Username: admin
+Username: %s
 Password: %s
 
 IMPORTANT:
@@ -249,17 +255,21 @@ IMPORTANT:
      (Google Authenticator / Authy / 1Password / Aegis). TOTP is OPTIONAL but
      STRONGLY recommended for any internet-exposed deployment.
   4. Delete this file after successful login.
-`, password)
+
+Note: both username and password are randomly generated per-install. If you
+lose them, use `+"`opsctl passwd <user>`"+` to reset the password, or check this
+file. You can rename the user later from the DB if you want a friendlier name.
+`, username, password)
 	if err := os.WriteFile(credPath, []byte(content), 0o600); err != nil {
 		return err
 	}
 
-	logger.Warn("FIRST RUN — admin credentials written", "file", credPath)
+	logger.Warn("FIRST RUN — admin credentials written", "file", credPath, "username", username)
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "===========================================================")
 	fmt.Fprintln(os.Stderr, "  ops-panel FIRST RUN")
 	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "  Username: admin")
+	fmt.Fprintln(os.Stderr, "  Username: "+username)
 	fmt.Fprintln(os.Stderr, "  Password: "+password)
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "  ⚠  Change password on first login, then bind Authenticator")

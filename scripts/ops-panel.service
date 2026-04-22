@@ -8,8 +8,10 @@ Type=simple
 User=opspanel
 Group=opspanel
 ExecStart=/usr/local/bin/ops-panel \
+    -data-dir /var/lib/ops-panel \
     -config /var/lib/ops-panel/config.json \
-    -frontend /var/lib/ops-panel/frontend
+    -frontend /var/lib/ops-panel/frontend \
+    -listen 127.0.0.1:8443
 Restart=on-failure
 RestartSec=5
 

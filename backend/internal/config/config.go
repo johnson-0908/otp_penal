@@ -100,3 +100,24 @@ func RandomPassword(n int) (string, error) {
 	}
 	return base64.RawURLEncoding.EncodeToString(buf)[:n], nil
 }
+
+// RandomUsername generates a username of the form `prefix_<N lowercase
+// alphanumerics>`, suitable for seeding the first admin. Defeats
+// username-enumeration guesses (no hardcoded "admin").
+func RandomUsername(prefix string, n int) (string, error) {
+	if n < 6 {
+		n = 8
+	}
+	const alpha = "abcdefghijkmnpqrstuvwxyz23456789" // no 0/o/1/l/i for readability
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("rand: %w", err)
+	}
+	for i := range buf {
+		buf[i] = alpha[int(buf[i])%len(alpha)]
+	}
+	if prefix == "" {
+		return string(buf), nil
+	}
+	return prefix + "_" + string(buf), nil
+}
